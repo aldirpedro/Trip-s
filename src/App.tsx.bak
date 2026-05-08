@@ -1,0 +1,201 @@
+import { useState, useEffect } from 'react'
+import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
+import { ref, onValue, set, push } from 'firebase/database'
+import { db } from './firebase'
+import FriendMarker from './FriendMarker'
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import './style.css'
+
+const destinations = [
+  { name: 'Sé da Guarda', lat: 40.538, lng: -7.27 },
+  { name: 'Castelo de Ciudad Rodrigo', lat: 40.666, lng: -6.588 },
+  { name: 'Plaza Mayor de Salamanca', lat: 40.965, lng: -5.664 }
+]
+
+const locationOptions = {
+  enableHighAccuracy: true,
+  timeout: 10000,
+  maximumAge: 30000
+}
+
+function haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371
+  const dLat = (lat2 - lat1) * Math.PI / 180
+  const dLon = (lon2 - lon1) * Math.PI / 180
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2)
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
+  return R * c
+}
+
+function App() {
+  const [roomId, setRoomId] = useState('')
+  const [userName, setUserName] = useState('')
+  const [friends, setFriends] = useState<Record<string, any>>({})
+  const [chatMessages, setChatMessages] = useState<any[]>([])
+  const [isSharing, setIsSharing] = useState(false)
+  const [watchId, setWatchId] = useState<number | null>(null)
+  const [lastSend, setLastSend] = useState(0)
+  const [isDarkMode, setIsDarkMode] = useState(false)
+  const [altitudeData, setAltitudeData] = useState<any[]>([])
+
+  useEffect(() => {
+    if (roomId) {
+      const friendsRef = ref(db, `rooms/${roomId}/locations`)
+      const chatRef = ref(db, `rooms/${roomId}/chat`)
+
+      const unsubFriends = onValue(friendsRef, (snapshot) => {
+        const data = snapshot.val()
+        if (data) setFriends(data)
+      })
+
+      const unsubChat = onValue(chatRef, (snapshot) => {
+        const data = snapshot.val()
+        if (data) {
+          const msgs = Object.values(data)
+          setChatMessages(msgs as any[])
+        }
+      })
+
+      return () => {
+        unsubFriends()
+        unsubChat()
+      }
+    }
+  }, [roomId])
+
+  const startSharing = () => {
+    if (navigator.geolocation) {
+      const id = navigator.geolocation.watchPosition(
+        (position) => {
+          const lat = position.coords.latitude
+          const lng = position.coords.longitude
+          checkGeofencing(lat, lng)
+          if (Date.now() - lastSend > 30000) {
+            const data = {
+              user: userName,
+              lat,
+              lng,
+              timestamp: Date.now(),
+              altitude: position.coords.altitude || 0
+            }
+            set(ref(db, `rooms/${roomId}/locations/${userName}`), data)
+            setLastSend(Date.now())
+            // Add to altitude data
+            setAltitudeData(prev => [...prev.slice(-9), { time: new Date().toLocaleTimeString(), altitude: data.altitude }])
+          }
+        },
+        (error) => console.log(error),
+        locationOptions
+      )
+      setWatchId(id)
+      setIsSharing(true)
+    } else {
+      alert('Geolocalização não suportada')
+    }
+  }
+
+  const stopSharing = () => {
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId)
+      setWatchId(null)
+      setIsSharing(false)
+    }
+  }
+
+  const checkGeofencing = (lat: number, lng: number) => {
+    destinations.forEach(dest => {
+      const dist = haversine(lat, lng, dest.lat, dest.lng)
+      if (dist < 1) {
+        alert(`Estamos a chegar a ${dest.name}!`)
+      }
+    })
+  }
+
+  const sendChatMessage = (emoji: string) => {
+    push(ref(db, `rooms/${roomId}/chat`), { text: `${userName}: ${emoji}`, timestamp: Date.now() })
+  }
+
+  const toggleDarkMode = () => {
+    setIsDarkMode(!isDarkMode)
+  }
+
+  const calculateETA = (lat: number, lng: number): number => {
+    const sal = destinations[2]
+    return haversine(lat, lng, sal.lat, sal.lng)
+  }
+
+  return (
+    <div style={{ height: '100vh', position: 'relative' }}>
+      <MapContainer center={[40.538, -7.27]} zoom={10} style={{ height: '70%', width: '100%' }}>
+        <TileLayer
+          url={isDarkMode ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png' : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'}
+          attribution='© OpenStreetMap contributors'
+        />
+        {destinations.map(dest => (
+          <Marker key={dest.name} position={[dest.lat, dest.lng]}>
+            <Popup>{dest.name}</Popup>
+          </Marker>
+        ))}
+        {Object.entries(friends).map(([name, data]: [string, any]) => (
+          <FriendMarker
+            key={name}
+            name={name}
+            coords={[data.lat, data.lng]}
+            isDriving={Date.now() - data.timestamp < 60000}
+          />
+        ))}
+      </MapContainer>
+      <div style={{ height: '30%', padding: '10px' }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={altitudeData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="time" />
+            <YAxis />
+            <Tooltip />
+            <Line type="monotone" dataKey="altitude" stroke="#2563eb" />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="control-panel">
+        <h2>Dashboard de Viagem</h2>
+        <div className="input-group">
+          <label>ID da Sala:</label>
+          <input value={roomId} onChange={e => setRoomId(e.target.value)} placeholder="Ex: viagem2024" />
+        </div>
+        <div className="input-group">
+          <label>Seu Nome:</label>
+          <input value={userName} onChange={e => setUserName(e.target.value)} placeholder="Ex: Amigo1" />
+        </div>
+        <button onClick={isSharing ? stopSharing : startSharing} className={isSharing ? "btn-stop" : "btn-share"}>
+          {isSharing ? 'Parar Compartilhar' : 'Começar Compartilhar'}
+        </button>
+        <button onClick={toggleDarkMode} className="btn-toggle">Modo Noite</button>
+        <div className="friends-list">
+          <h3>Amigos Online</h3>
+          <ul>
+            {Object.entries(friends).map(([name, data]: [string, any]) => (
+              <li key={name}>
+                <span className={`status-dot ${Date.now() - data.timestamp < 60000 ? 'status-online' : 'status-offline'}`}></span>
+                {name} - ETA: {calculateETA(data.lat, data.lng).toFixed(1)} km
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="chat">
+          <h3>Chat Rápido</h3>
+          <div className="emoji-buttons">
+            <button onClick={() => sendChatMessage('☕')}>☕ Café</button>
+            <button onClick={() => sendChatMessage('⛽')}>⛽ Combustível</button>
+            <button onClick={() => sendChatMessage('🚗')}>🚗 Trânsito</button>
+            <button onClick={() => sendChatMessage('🏁')}>🏁 Chegamos</button>
+          </div>
+          <div className="chat-messages">
+            {chatMessages.map((msg, i) => <p key={i}>{msg.text}</p>)}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default App
