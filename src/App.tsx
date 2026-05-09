@@ -42,44 +42,70 @@ function App() {
   const [roomCreatedAt, setRoomCreatedAt] = useState<number | null>(null)
 
   useEffect(() => {
-    if (!roomId) return
+    if (!roomId) {
+      console.log('ℹ️ Nenhum roomId definido, sem listeners.')
+      return
+    }
 
+    console.log('🔍 Iniciando listeners para sala:', roomId)
+    
     const roomRef = ref(db, `rooms/${roomId}/users`)
     const chatRef = ref(db, `rooms/${roomId}/chat`)
 
     const unsubFriends = onValue(roomRef, (snapshot) => {
       const data = snapshot.val()
+      console.log('📍 Dados de amigos recebidos:', data)
       if (data) setFriends(data)
+      else setFriends({})
+    }, (error) => {
+      console.error('❌ Erro ao ler amigos:', error)
     })
 
     const unsubChat = onValue(chatRef, (snapshot) => {
       const data = snapshot.val()
+      console.log('💬 Mensagens recebidas:', data)
       if (data) {
         const msgs = Object.values(data)
         setChatMessages(msgs as any[])
       }
+    }, (error) => {
+      console.error('❌ Erro ao ler chat:', error)
     })
 
     return () => {
+      console.log('🛑 Removendo listeners da sala:', roomId)
       unsubFriends()
       unsubChat()
     }
   }, [roomId])
 
-  const handleCreateRoom = () => {
+  const handleCreateRoom = async () => {
     const newId = generateRoomId()
-    setRoomId(newId)
-    set(ref(db, `rooms/${newId}`), { createdAt: Date.now() })
-    setRoomCreatedAt(Date.now())
+    try {
+      await set(ref(db, `rooms/${newId}`), { 
+        createdAt: Date.now(),
+        admin: userName || 'Admin'
+      })
+      setRoomId(newId)
+      setRoomCreatedAt(Date.now())
+      console.log('✅ Sala criada com sucesso:', newId)
+    } catch (error) {
+      console.error('❌ Erro ao criar sala:', error)
+      alert('Erro ao criar sala. Verifica a consola.')
+    }
   }
 
   const startSharing = () => {
-    if (!userName || !roomId) return alert('Preenche o nome e ID!')
+    if (!userName || !roomId) {
+      console.warn('⚠️ Faltam dados: userName ou roomId')
+      return alert('Preenche o nome e ID!')
+    }
 
     const id = navigator.geolocation.watchPosition(
       (position) => {
         const lat = position.coords.latitude
         const lng = position.coords.longitude
+        console.log('📍 GPS capturado:', { lat, lng })
         checkGeofencing(lat, lng)
         if (Date.now() - lastSend > 30000) {
           const userRef = ref(db, `rooms/${roomId}/users/${userName}`)
@@ -88,16 +114,21 @@ function App() {
             lng,
             lastUpdate: Date.now(),
             altitude: position.coords.altitude || 0
+          }).then(() => {
+            console.log('✅ Posição enviada para Firebase:', { userName, lat, lng })
+          }).catch(error => {
+            console.error('❌ Erro ao enviar posição:', error)
           })
           setLastSend(Date.now())
           setAltitudeData(prev => [...prev.slice(-9), { time: new Date().toLocaleTimeString(), altitude: position.coords.altitude || 0 }])
         }
       },
-      (error) => console.log(error),
+      (error) => console.error('❌ Erro GPS:', error),
       locationOptions
     )
     setWatchId(id)
     setIsSharing(true)
+    console.log('✅ Partilha de localização iniciada')
   }
 
   const stopSharing = () => {
